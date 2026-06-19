@@ -75,6 +75,130 @@ async function initSupabase() {
   }
 }
 
+async function ensureNFSheet() {
+  try {
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+    const exists = spreadsheet.data.sheets.some(s => s.properties.title === 'notas_fiscais');
+    if (exists) {
+      console.log('✅ Google Sheets — aba notas_fiscais OK');
+      return;
+    }
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: 'notas_fiscais' } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: 'notas_fiscais!A1:F1',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [['data_registro', 'chat_id', 'empresa', 'valor', 'data_nf', 'descricao']] },
+    });
+    console.log('✅ Google Sheets — aba notas_fiscais criada');
+  } catch (err) {
+    console.error('Google Sheets init erro:', err.message);
+  }
+}
+
+async function saveNFToSupabase(chatId, empresa, valor, dataNF, descricao) {
+  const { error } = await supabase.from('notas_fiscais').insert({
+    chat_id: String(chatId),
+    empresa,
+    valor,
+    data_nf: dataNF,
+    descricao,
+  });
+  if (error) {
+    if (error.code === '42P01') {
+      console.error('⚠️ Tabela notas_fiscais não existe. Execute supabase/migrations/create_notas_fiscais.sql no dashboard do Supabase.');
+    } else {
+      console.error('Supabase NF erro:', error.message);
+    }
+  }
+}
+
+async function saveNFToSheet(chatId, empresa, valor, dataNF, descricao) {
+  try {
+    const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: 'notas_fiscais!A:F',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[now, String(chatId), empresa, valor, dataNF, descricao]] },
+    });
+  } catch (err) {
+    console.error('Google Sheets NF erro:', err.message);
+  }
+}
+
+async function handlePhoto(message) {
+  const chatId = message.chat.id;
+  try {
+    await sendMessage(chatId, '🔍 Processando nota fiscal...');
+
+    const photo = message.photo[message.photo.length - 1];
+    const fileRes = await axios.post(`${BASE_URL}/getFile`, { file_id: photo.file_id });
+    const filePath = fileRes.data.result.file_path;
+
+    const imageRes = await axios.get(
+      `https://api.telegram.org/file/bot${TOKEN}/${filePath}`,
+      { responseType: 'arraybuffer' }
+    );
+    const base64Image = Buffer.from(imageRes.data).toString('base64');
+    const ext = filePath.split('.').pop().toLowerCase();
+    const mediaType = (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' : 'image/png';
+
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64Image },
+          },
+          {
+            type: 'text',
+            text: 'Analise esta nota fiscal brasileira e extraia os dados em JSON com os campos: empresa (string), valor (string com o valor total), data_nf (string no formato DD/MM/AAAA), descricao (string resumindo os itens ou serviço). Responda APENAS com o JSON, sem texto adicional.',
+          },
+        ],
+      }],
+    });
+
+    const rawText = response.content[0].text.trim();
+    let nfData;
+    try {
+      const jsonText = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+      nfData = JSON.parse(jsonText);
+    } catch {
+      await sendMessage(chatId, '⚠️ Não foi possível extrair dados estruturados. Tente uma foto mais nítida.');
+      return;
+    }
+
+    const { empresa, valor, data_nf, descricao } = nfData;
+
+    await Promise.all([
+      saveNFToSupabase(chatId, empresa, String(valor), data_nf, descricao),
+      saveNFToSheet(chatId, empresa, String(valor), data_nf, descricao),
+    ]);
+
+    const reply = [
+      '✅ Nota fiscal registrada!',
+      '',
+      `🏢 Empresa: ${empresa}`,
+      `💰 Valor: R$ ${valor}`,
+      `📅 Data: ${data_nf}`,
+      `📝 Descrição: ${descricao}`,
+    ].join('\n');
+
+    await sendMessage(chatId, reply);
+    console.log(`📸 NF processada de ${chatId}: ${empresa} R$${valor}`);
+  } catch (err) {
+    console.error('Erro handlePhoto:', err.message);
+    await sendMessage(chatId, '⚠️ Erro ao processar a foto.');
+  }
+}
+
 // Ollama permanece disponível apenas para categorização de despesas
 async function askOllamaExpenseCategory(prompt) {
   const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
@@ -112,6 +236,7 @@ async function getUpdates() {
 async function startBot() {
   console.log('🚀 Bot Telegram rodando...');
   await initSupabase();
+  await ensureNFSheet();
 
   while (true) {
     try {
@@ -130,6 +255,9 @@ async function startBot() {
             console.error('Erro Claude:', err.message);
             await sendMessage(message.chat.id, '⚠️ Erro ao gerar resposta. Verifique a ANTHROPIC_API_KEY.');
           }
+        } else if (message && message.photo) {
+          console.log(`📸 Foto recebida de ${message.chat.id}`);
+          handlePhoto(message).catch(err => console.error('handlePhoto:', err.message));
         }
       }
     } catch (error) {
