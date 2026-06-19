@@ -2,6 +2,7 @@ require('dotenv').config({ path: '.env.local' });
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
 const { createClient } = require('@supabase/supabase-js');
+const { google } = require('googleapis');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BASE_URL = `https://api.telegram.org/bot${TOKEN}`;
@@ -14,6 +15,16 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const SHEET_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+const sheetsAuth = new google.auth.GoogleAuth({
+  credentials: {
+    client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  },
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+});
+const sheets = google.sheets({ version: 'v4', auth: sheetsAuth });
+
 async function askClaude(prompt) {
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -21,6 +32,22 @@ async function askClaude(prompt) {
     messages: [{ role: 'user', content: prompt }],
   });
   return response.content[0].text;
+}
+
+async function appendToSheet(chatId, userMessage, botResponse) {
+  try {
+    const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: 'A:D',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [[now, String(chatId), userMessage, botResponse]],
+      },
+    });
+  } catch (err) {
+    console.error('Google Sheets erro:', err.message);
+  }
 }
 
 async function saveMessage(chatId, userMessage, botResponse) {
@@ -36,6 +63,7 @@ async function saveMessage(chatId, userMessage, botResponse) {
       console.error('Supabase erro:', error.message);
     }
   }
+  await appendToSheet(chatId, userMessage, botResponse);
 }
 
 async function initSupabase() {
