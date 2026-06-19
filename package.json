@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "bot": "node scripts/bot.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
