@@ -15,7 +15,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const SHEET_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const sheetsAuth = new google.auth.GoogleAuth({
   credentials: {
     client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
