@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS notas_fiscais (
   valor TEXT,
   data_nf TEXT,
   descricao TEXT,
+  categoria TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

@@ -12,6 +12,11 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+function extrairTexto(content: Anthropic.ContentBlock[]): string {
+  const bloco = content.find((b) => b.type === 'text');
+  return bloco && bloco.type === 'text' ? bloco.text : '';
+}
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -36,7 +41,7 @@ async function askClaude(prompt: string): Promise<string> {
     max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
-  return (response.content[0] as { text: string }).text;
+  return extrairTexto(response.content);
 }
 
 async function appendToSheet(chatId: number, userMessage: string, botResponse: string) {
@@ -45,7 +50,7 @@ async function appendToSheet(chatId: number, userMessage: string, botResponse: s
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: 'A:D',
-      valueInputOption: 'USER_ENTERED',
+      valueInputOption: 'RAW',
       requestBody: { values: [[now, String(chatId), userMessage, botResponse]] },
     });
   } catch (err: unknown) {
@@ -63,25 +68,26 @@ async function saveMessage(chatId: number, userMessage: string, botResponse: str
   await appendToSheet(chatId, userMessage, botResponse);
 }
 
-async function saveNFToSupabase(chatId: number, empresa: string, valor: string, dataNF: string, descricao: string) {
+async function saveNFToSupabase(chatId: number, empresa: string, valor: string, dataNF: string, descricao: string, categoria: string) {
   const { error } = await supabase.from('notas_fiscais').insert({
     chat_id: String(chatId),
     empresa,
     valor,
     data_nf: dataNF,
     descricao,
+    categoria,
   });
   if (error) console.error('Supabase NF erro:', error.message);
 }
 
-async function saveNFToSheet(chatId: number, empresa: string, valor: string, dataNF: string, descricao: string) {
+async function saveNFToSheet(chatId: number, empresa: string, valor: string, dataNF: string, descricao: string, categoria: string) {
   try {
     const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: 'notas_fiscais!A:F',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [[now, String(chatId), empresa, valor, dataNF, descricao]] },
+      range: 'notas_fiscais!A:G',
+      valueInputOption: 'RAW',
+      requestBody: { values: [[now, String(chatId), empresa, valor, dataNF, descricao, categoria]] },
     });
   } catch (err: unknown) {
     console.error('Sheets NF erro:', (err as Error).message);
@@ -119,14 +125,14 @@ async function handlePhoto(message: {
         },
         {
           type: 'text',
-          text: 'Analise esta nota fiscal brasileira e extraia os dados em JSON com os campos: empresa (string), valor (string com o valor total), data_nf (string no formato DD/MM/AAAA), descricao (string resumindo os itens ou serviço). Responda APENAS com o JSON, sem texto adicional.',
+          text: 'Analise esta nota fiscal brasileira e extraia os dados em JSON com os campos: empresa (string), valor (string com o valor total), data_nf (string no formato DD/MM/AAAA), descricao (string resumindo os itens ou serviço), categoria (string, exatamente UMA de: Alimentacao, Transporte, Servicos, Saude, Educacao, Outros). Responda APENAS com o JSON, sem texto adicional.',
         },
       ],
     }],
   });
 
-  const rawText = (response.content[0] as { text: string }).text.trim();
-  let nfData: { empresa: string; valor: string; data_nf: string; descricao: string };
+  const rawText = extrairTexto(response.content).trim();
+  let nfData: { empresa: string; valor: string; data_nf: string; descricao: string; categoria: string };
   try {
     const jsonText = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
     nfData = JSON.parse(jsonText);
@@ -135,11 +141,11 @@ async function handlePhoto(message: {
     return;
   }
 
-  const { empresa, valor, data_nf, descricao } = nfData;
+  const { empresa, valor, data_nf, descricao, categoria } = nfData;
 
   await Promise.all([
-    saveNFToSupabase(chatId, empresa, String(valor), data_nf, descricao),
-    saveNFToSheet(chatId, empresa, String(valor), data_nf, descricao),
+    saveNFToSupabase(chatId, empresa, String(valor), data_nf, descricao, categoria),
+    saveNFToSheet(chatId, empresa, String(valor), data_nf, descricao, categoria),
   ]);
 
   await sendMessage(chatId, [
@@ -148,12 +154,18 @@ async function handlePhoto(message: {
     `🏢 Empresa: ${empresa}`,
     `💰 Valor: R$ ${valor}`,
     `📅 Data: ${data_nf}`,
+    `🏷️ Categoria: ${categoria}`,
     `📝 Descrição: ${descricao}`,
   ].join('\n'));
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    if (secret && req.headers.get('x-telegram-bot-api-secret-token') !== secret) {
+      return NextResponse.json({ ok: false }, { status: 401 });
+    }
+
     const update = await req.json();
     const message = update.message;
 

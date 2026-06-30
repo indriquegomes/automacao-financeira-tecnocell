@@ -10,7 +10,14 @@ if (!VERCEL_URL) {
 }
 
 const webhookUrl = `${VERCEL_URL}/api/telegram`;
-const body = JSON.stringify({ url: webhookUrl });
+const SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
+
+if (!SECRET) {
+  console.error('❌ TELEGRAM_WEBHOOK_SECRET ausente no .env.local. O webhook seria registrado sem proteção e o route rejeitaria os updates.');
+  process.exit(1);
+}
+
+const body = JSON.stringify({ url: webhookUrl, secret_token: SECRET });
 
 const options = {
   hostname: 'api.telegram.org',

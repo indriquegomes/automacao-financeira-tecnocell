@@ -40,7 +40,7 @@ async function appendToSheet(chatId, userMessage, botResponse) {
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: 'A:D',
-      valueInputOption: 'USER_ENTERED',
+      valueInputOption: 'RAW',
       requestBody: {
         values: [[now, String(chatId), userMessage, botResponse]],
       },
@@ -89,9 +89,9 @@ async function ensureNFSheet() {
     });
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: 'notas_fiscais!A1:F1',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [['data_registro', 'chat_id', 'empresa', 'valor', 'data_nf', 'descricao']] },
+      range: 'notas_fiscais!A1:G1',
+      valueInputOption: 'RAW',
+      requestBody: { values: [['data_registro', 'chat_id', 'empresa', 'valor', 'data_nf', 'descricao', 'categoria']] },
     });
     console.log('✅ Google Sheets — aba notas_fiscais criada');
   } catch (err) {
@@ -99,13 +99,14 @@ async function ensureNFSheet() {
   }
 }
 
-async function saveNFToSupabase(chatId, empresa, valor, dataNF, descricao) {
+async function saveNFToSupabase(chatId, empresa, valor, dataNF, descricao, categoria) {
   const { error } = await supabase.from('notas_fiscais').insert({
     chat_id: String(chatId),
     empresa,
     valor,
     data_nf: dataNF,
     descricao,
+    categoria,
   });
   if (error) {
     if (error.code === '42P01') {
@@ -116,14 +117,14 @@ async function saveNFToSupabase(chatId, empresa, valor, dataNF, descricao) {
   }
 }
 
-async function saveNFToSheet(chatId, empresa, valor, dataNF, descricao) {
+async function saveNFToSheet(chatId, empresa, valor, dataNF, descricao, categoria) {
   try {
     const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: 'notas_fiscais!A:F',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [[now, String(chatId), empresa, valor, dataNF, descricao]] },
+      range: 'notas_fiscais!A:G',
+      valueInputOption: 'RAW',
+      requestBody: { values: [[now, String(chatId), empresa, valor, dataNF, descricao, categoria]] },
     });
   } catch (err) {
     console.error('Google Sheets NF erro:', err.message);
@@ -159,7 +160,7 @@ async function handlePhoto(message) {
           },
           {
             type: 'text',
-            text: 'Analise esta nota fiscal brasileira e extraia os dados em JSON com os campos: empresa (string), valor (string com o valor total), data_nf (string no formato DD/MM/AAAA), descricao (string resumindo os itens ou serviço). Responda APENAS com o JSON, sem texto adicional.',
+            text: 'Analise esta nota fiscal brasileira e extraia os dados em JSON com os campos: empresa (string), valor (string com o valor total), data_nf (string no formato DD/MM/AAAA), descricao (string resumindo os itens ou serviço), categoria (string, exatamente UMA de: Alimentacao, Transporte, Servicos, Saude, Educacao, Outros). Responda APENAS com o JSON, sem texto adicional.',
           },
         ],
       }],
@@ -175,11 +176,11 @@ async function handlePhoto(message) {
       return;
     }
 
-    const { empresa, valor, data_nf, descricao } = nfData;
+    const { empresa, valor, data_nf, descricao, categoria } = nfData;
 
     await Promise.all([
-      saveNFToSupabase(chatId, empresa, String(valor), data_nf, descricao),
-      saveNFToSheet(chatId, empresa, String(valor), data_nf, descricao),
+      saveNFToSupabase(chatId, empresa, String(valor), data_nf, descricao, categoria),
+      saveNFToSheet(chatId, empresa, String(valor), data_nf, descricao, categoria),
     ]);
 
     const reply = [
@@ -188,6 +189,7 @@ async function handlePhoto(message) {
       `🏢 Empresa: ${empresa}`,
       `💰 Valor: R$ ${valor}`,
       `📅 Data: ${data_nf}`,
+      `🏷️ Categoria: ${categoria}`,
       `📝 Descrição: ${descricao}`,
     ].join('\n');
 
